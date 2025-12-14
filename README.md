@@ -1,5 +1,5 @@
 # M&M: Secure Two-Party Machine Learning through Efficient Modulus Conversion and Mixed-Mode Protocols
-This repo contains a proof-of-concept implementation for our M&M paper.
+This repo contains a proof-of-concept implementation for our paper [M&M](https://eprint.iacr.org/2025/1551).
 
 
 ### Repo Directory Description
@@ -88,3 +88,15 @@ Also, you can use our throttle script to mimic a remote network condition within
 | LAN  | 1Gbps | 2ms |
 | WAN  | 1Gbps | 40ms |
 | MAN  | 100Mbps | 40ms | -->
+
+### Citing
+
+```text
+@misc{cryptoeprint:2025/1551,
+      author = {Ye Dong and Wen-jie Lu and Xiaoyang Hou and Kang Yang and Jian Liu},
+      title = {M&M: Secure Two-Party Machine Learning through Efficient Modulus Conversion and Mixed-Mode Protocols (Full Version)},
+      howpublished = {Cryptology {ePrint} Archive, Paper 2025/1551},
+      year = {2025},
+      url = {https://eprint.iacr.org/2025/1551}
+}
+````
