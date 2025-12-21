@@ -1,5 +1,8 @@
 # M&M: Secure Two-Party Machine Learning through Efficient Modulus Conversion and Mixed-Mode Protocols
-This repo contains a proof-of-concept implementation for our paper [M&M](https://eprint.iacr.org/2025/1551).
+
+Secure two-party machine learning has made substantial progress through the use of mixed-mode protocols, but existing approaches often suffer from efficiency bottlenecks due to inherent mismatch between optimal domains of various cryptographic primitives. In response to these challenges, we introduce framework M&M, which features an efficient modulus conversion protocol. This breakthrough enables seamless integration of the most suitable cryptographic subprotocols within their optimal modulus domains with a minimal modulus conversion overhead. We further establish new benchmarks and practical optimizations for the performance of fundamental primitives, namely comparison and multiplication, across various two-party techniques.By incorporating these techniques, M&M demonstrates significant performance enhancements over state-of-the-art solutions: i) we report a $6\times$-$100\times$ improvement for approximated truncations with 1-bit error tolerance; ii) an average of $5\times$ (resp. $4\times$) reduction in communication (resp. runtime) for machine learning functions; iii) and a 25%-99% improvement in cost-efficiency for private inference of deep neural networks and 50% improvement in private training of gradient boosting decision trees.
+
+This repo contains a proof-of-concept implementation for our paper [M&M](https://www.computer.org/csdl/journal/tq/5555/01/11297783/2cmEO15JRg4).
 
 
 ### Repo Directory Description
@@ -92,11 +95,19 @@ Also, you can use our throttle script to mimic a remote network condition within
 ### Citing
 
 ```text
-@misc{cryptoeprint:2025/1551,
-      author = {Ye Dong and Wen-jie Lu and Xiaoyang Hou and Kang Yang and Jian Liu},
-      title = {M&M: Secure Two-Party Machine Learning through Efficient Modulus Conversion and Mixed-Mode Protocols (Full Version)},
-      howpublished = {Cryptology {ePrint} Archive, Paper 2025/1551},
-      year = {2025},
-      url = {https://eprint.iacr.org/2025/1551}
-}
+@ARTICLE{11297783,
+author={Dong, Ye and Lu, Wen-jie and Hou, Xiaoyang and Yang, Kang and Liu, Jian},
+journal={ IEEE Transactions on Dependable and Secure Computing },
+title={{ M&M: Secure Two-Party Machine Learning through Modulus Conversion and Mixed-Mode Protocols }},
+year={5555},
+volume={},
+number={01},
+ISSN={1941-0018},
+pages={1-15},
+doi={10.1109/TDSC.2025.3643323},
+url = {https://doi.ieeecomputersociety.org/10.1109/TDSC.2025.3643323},
+publisher={IEEE Computer Society},
+address={Los Alamitos, CA, USA},
+month=dec}
+
 ````
