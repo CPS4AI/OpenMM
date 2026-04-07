@@ -154,6 +154,19 @@ std::vector<Value> intrinsic_dispatcher(SPUContext* ctx,
     return {kernel::hal::intrinsic::nn::f_seg3_gelu(ctx, inputs[0])};
   }
 
+  if (name == GELU_FM32_BASELINE) {
+    SPU_ENFORCE(inputs.size() == 1 && inputs[0].isFxp() &&
+                inputs[0].isSecret());
+    return {kernel::hal::intrinsic::nn::f_seg3_gelu_fm32_baseline(ctx,
+                                                                   inputs[0])};
+  }
+
+  if (name == GELU_HYBRID) {
+    SPU_ENFORCE(inputs.size() == 1 && inputs[0].isFxp() &&
+                inputs[0].isSecret());
+    return {kernel::hal::intrinsic::nn::f_seg3_gelu_hybrid(ctx, inputs[0])};
+  }
+
   if (name == SILU) {
     SPU_ENFORCE(inputs.size() == 1 && inputs[0].isFxp() &&
                 inputs[0].isSecret());

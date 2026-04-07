@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__all__ = ["spu_gelu"]
+__all__ = ["spu_gelu", "spu_gelu_fm32_baseline", "spu_gelu_hybrid"]
 
 from functools import partial
 
@@ -24,73 +24,51 @@ from jax.interpreters import ad, batching, mlir, xla
 from jaxlib.hlo_helpers import custom_call
 
 
+def _make_spu_gelu(call_target_name, primitive_name):
+    def _spu_gelu(input):
+        return _prim.bind(input)
+
+    def _spu_gelu_abstract(input):
+        shape = input.shape
+        dtype = dtypes.canonicalize_dtype(input.dtype)
+        return ShapedArray(shape, dtype)
+
+    def _spu_gelu_lowering(ctx, input):
+        dtype = mlir.ir.RankedTensorType(input.type)
+        call = custom_call(
+            call_target_name,
+            result_types=[dtype],
+            operands=[input],
+        )
+        return call.results
+
+    def _spu_gelu_jvp(args, tangents):
+        raise NotImplementedError()
+
+    def _spu_gelu_batch(args, axes):
+        assert axes[0] == axes[1]
+        return _spu_gelu(*args), axes
+
+    _prim = core.Primitive(primitive_name)
+    _prim.multiple_results = False
+    _prim.def_impl(partial(xla.apply_primitive, _prim))
+    _prim.def_abstract_eval(_spu_gelu_abstract)
+
+    mlir.register_lowering(_prim, _spu_gelu_lowering)
+    ad.primitive_jvps[_prim] = _spu_gelu_jvp
+    batching.primitive_batchers[_prim] = _spu_gelu_batch
+    return _spu_gelu
+
+
 # Public facing interface
-def spu_gelu(input):
-    return _spu_gelu_prim.bind(input)
+spu_gelu = _make_spu_gelu("spu.gelu", "spu_gelu")
+spu_gelu_fm32_baseline = _make_spu_gelu(
+    "spu.gelu_fm32_baseline", "spu_gelu_fm32_baseline"
+)
+spu_gelu_hybrid = _make_spu_gelu("spu.gelu_hybrid", "spu_gelu_hybrid")
 
 
 # *********************************
 # *  SUPPORT FOR JIT COMPILATION  *
 # *********************************
 
-
-# For JIT compilation we need a function to evaluate the shape and dtype of the
-# outputs of our op for some given inputs
-def _spu_gelu_abstract(input):
-    shape = input.shape
-    dtype = dtypes.canonicalize_dtype(input.dtype)
-    return ShapedArray(shape, dtype)
-
-
-# We also need a lowering rule to provide an MLIR "lowering" of out primitive.
-def _spu_gelu_lowering(ctx, input):
-    # The inputs and outputs all have the same shape and memory layout
-    # so let's predefine this specification
-    dtype = mlir.ir.RankedTensorType(input.type)
-
-    call = custom_call(
-        "spu.gelu",
-        # Output types
-        result_types=[dtype],
-        # The inputs:
-        operands=[input],
-    )
-
-    return call.results
-
-
-# **********************************
-# *  SUPPORT FOR FORWARD AUTODIFF  *
-# **********************************
-
-
-def _spu_gelu_jvp(args, tangents):
-    raise NotImplementedError()
-
-
-# ************************************
-# *  SUPPORT FOR BATCHING WITH VMAP  *
-# ************************************
-
-
-# Our op already supports arbitrary dimensions so the batching rule is quite
-# simple. The jax.lax.linalg module includes some spu_gelu of more complicated
-# batching rules if you need such a thing.
-def _spu_gelu_batch(args, axes):
-    assert axes[0] == axes[1]
-    return spu_gelu(*args), axes
-
-
-# *********************************************
-# *  BOILERPLATE TO REGISTER THE OP WITH JAX  *
-# *********************************************
-_spu_gelu_prim = core.Primitive("spu_gelu")
-_spu_gelu_prim.multiple_results = False
-_spu_gelu_prim.def_impl(partial(xla.apply_primitive, _spu_gelu_prim))
-_spu_gelu_prim.def_abstract_eval(_spu_gelu_abstract)
-
-mlir.register_lowering(_spu_gelu_prim, _spu_gelu_lowering)
-
-# Connect the JVP and batching rules
-ad.primitive_jvps[_spu_gelu_prim] = _spu_gelu_jvp
-batching.primitive_batchers[_spu_gelu_prim] = _spu_gelu_batch

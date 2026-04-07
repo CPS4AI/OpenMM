@@ -14,7 +14,7 @@
 
 
 import unittest
-
+import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import numpy as np
@@ -70,7 +70,9 @@ def bumblebee_softmax():
 
     sim = ppsim.Simulator(2, config)
 
-    x = np.random.randn(128, 32) * 8.0
+    x = np.random.randn(128, 32) * 10000.0
+
+    print(max(abs(x.flatten())))
 
     target_func = jnn.softmax
     spu_fn = ppsim.sim_jax(sim, _softmax, copts=copts)
@@ -82,6 +84,8 @@ def bumblebee_softmax():
     print("max diff = {}".format(np.max(diff)))
 
 
+
 if __name__ == "__main__":
     # naive_softmax()
     bumblebee_softmax()
+    # mgf_softmax()

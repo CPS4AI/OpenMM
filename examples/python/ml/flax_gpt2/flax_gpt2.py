@@ -39,7 +39,7 @@ copts = spu_pb2.CompilerOptions()
 copts.enable_optimize_denominator_with_broadcast = True
 
 parser = argparse.ArgumentParser(description='distributed driver.')
-parser.add_argument("-c", "--config", default="examples/python/ml/flax_gpt2/2pc.json")
+parser.add_argument("-c", "--config", default="examples/python/conf/2pc.json")
 args = parser.parse_args()
 
 with open(args.config, 'r') as file:
@@ -49,14 +49,14 @@ ppd.init(conf["nodes"], conf["devices"])
 
 
 def _gelu(x):
-    return intrinsic.spu_gelu(x)
+    return intrinsic.spu_gelu_hybrid(x)
 
 
 def _softmax(x, axis=-1, where=None, initial=None):
     x_max = jax.numpy.max(x, axis, where=where, initial=initial, keepdims=True)
     x = x - x_max
     # spu.neg_exp will clip values that too large.
-    # nexp = jax.numpy.exp(x) * (x > -14.0)
+    # nexp = jax.numpy.exp(x) * (x > -13.0)
     nexp = intrinsic.spu_neg_exp(x)
     divisor = jax.numpy.sum(nexp, axis, where=where, keepdims=True)
     return nexp / divisor
@@ -86,7 +86,7 @@ def hijack(enabled=True):
     fnn.softmax = fnn_sm
 
 
-TOKEN_NUM = 8
+TOKEN_NUM = 10
 
 
 def run_on_cpu(model, input_ids, tokenizer):
@@ -97,7 +97,8 @@ def run_on_cpu(model, input_ids, tokenizer):
     # ref: https://huggingface.co/blog/how-to-generate
     def eval(params, input_ids, token_num=TOKEN_NUM):
         for _ in range(token_num):
-            outputs = model(input_ids=input_ids, params=params)
+            with hijack(enabled=False):
+                outputs = model(input_ids=input_ids, params=params)
             next_token_logits = outputs[0][0, -1, :]
             next_token = jax.numpy.argmax(next_token_logits)
             input_ids = jax.numpy.concatenate(

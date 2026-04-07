@@ -52,7 +52,7 @@ ppd.init(conf["nodes"], conf["devices"])
 
 
 def _gelu(x):
-    return intrinsic.spu_gelu(x)
+    return intrinsic.spu_gelu_hybrid(x)
 
 
 def _softmax(x, axis=-1, where=None, initial=None):
@@ -62,7 +62,6 @@ def _softmax(x, axis=-1, where=None, initial=None):
     nexp = intrinsic.spu_neg_exp(x)
     divisor = jax.numpy.sum(nexp, axis, where=where, keepdims=True)
     return nexp / divisor
-
 
 @contextmanager
 def hijack(enabled=True):

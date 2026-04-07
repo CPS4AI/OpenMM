@@ -14,8 +14,9 @@
 
 #include "libspu/mpc/cheetah/ot/yacl/ferret.h"
 
-#include <_types/_uint64_t.h>
+// #include <_types/_uint64_t.h> // for macOS
 
+#include <cstdint> // for linux
 #include <utility>
 
 #include "seal/modulus.h"

@@ -24,7 +24,8 @@ import spu.spu_pb2 as spu_pb2
 import spu.utils.simulation as ppsim
 
 
-def gelu():
+def _run_gelu(label, intrinsic_fn):
+    np.random.seed(1234)
     config = spu_pb2.RuntimeConfig(
         protocol=spu_pb2.ProtocolKind.CHEETAH, field=spu_pb2.FieldType.FM64
     )
@@ -35,15 +36,19 @@ def gelu():
 
     sim = ppsim.Simulator(2, config)
 
-    x = np.random.randn(1 << 10) * 4.0
-    spu_fn = ppsim.sim_jax(sim, si.spu_gelu)
+    x = np.random.randn(1 << 20) * 100.0
+    spu_fn = ppsim.sim_jax(sim, intrinsic_fn)
     z = spu_fn(x)
     g = jnn.gelu(x)
     diff = z - g
 
-    # print(f"gelu spu out = {z[:10]}")
-    # print(f"gelu cpu out = {g[:10]}")
-    print("gelu max diff = {}".format(np.max(diff)))
+    print("{} max abs diff = {}".format(label, np.max(np.abs(diff))))
+    print("{} mean abs diff = {}".format(label, np.mean(np.abs(diff))))
+
+
+def gelu():
+    _run_gelu("gelu_hybrid", si.spu_gelu_hybrid)
+    _run_gelu("gelu_fm32_baseline", si.spu_gelu_fm32_baseline)
 
 
 def silu():
@@ -57,7 +62,7 @@ def silu():
 
     sim = ppsim.Simulator(2, config)
 
-    x = np.random.randn(1 << 20) * 8.0
+    x = np.random.randn(1 << 10) * 8.0
     spu_fn = ppsim.sim_jax(sim, si.spu_silu)
     z = spu_fn(x)
     g = jnn.silu(x)
@@ -70,4 +75,4 @@ def silu():
 
 if __name__ == "__main__":
     gelu()
-    # silu()
+    #silu()

@@ -23,6 +23,8 @@
 #define    DBG_PRINT        "spu.dbg_print"
 #define    GATHER           "spu.gather"
 #define    GELU             "spu.gelu"
+#define    GELU_FM32_BASELINE "spu.gelu_fm32_baseline"
+#define    GELU_HYBRID      "spu.gelu_hybrid"
 #define    SILU             "spu.silu"
 #define    NEG_EXP          "spu.neg_exp"
 // should be consistent with python level

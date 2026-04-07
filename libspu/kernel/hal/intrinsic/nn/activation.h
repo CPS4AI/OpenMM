@@ -20,6 +20,8 @@ Value f_neg_exp_taylor(SPUContext* ctx, const Value& x);
 
 // gelu(x)
 Value f_seg3_gelu(SPUContext* ctx, const Value& x);
+Value f_seg3_gelu_fm32_baseline(SPUContext* ctx, const Value& x);
+Value f_seg3_gelu_hybrid(SPUContext* ctx, const Value& x);
 
 // silu(x)
 Value f_seg4_silu(SPUContext* ctx, const Value& x);

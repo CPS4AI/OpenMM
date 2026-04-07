@@ -40,8 +40,9 @@ NdArrayRef MulThenTrunc(KernelEvalContext* kctx, const NdArrayRef& x,
 NdArrayRef SquareThenTrunc(KernelEvalContext* kctx, const NdArrayRef& x,
                            FieldType working_ft, int fxp, bool keep_ft);
 
-// Given [x*2^fxp] mod 2k for x \in [-8, 0]
+// Given [x*2^fxp] mod 2k for x \in [-14, 0]
 // compute [exp(x) * 2^fxp] mod 2^k
 NdArrayRef NExp_8(KernelEvalContext* kctx, const NdArrayRef& x, int fxp);
+NdArrayRef NExp_14(KernelEvalContext* kctx, const NdArrayRef& x, int fxp);
 
 }  // namespace spu::mpc::cheetor

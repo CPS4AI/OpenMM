@@ -31,8 +31,42 @@
 
 namespace spu::kernel::hal::intrinsic::nn {
 
+static bool CanUseCheetor(SPUContext* ctx, const Value& x) {
+  return ctx->config().protocol() == ProtocolKind::CHEETAH && x.isSecret() &&
+         x.isFxp() && ctx->config().field() != FM32;
+}
+
+static FieldType CheetorWorkingField(FieldType field) {
+  return field == FM128 ? FM64 : field;
+}
+
+static Value CheetorSquare(SPUContext* ctx, const Value& x, bool keep_field) {
+  KernelEvalContext kctx(ctx);
+  auto working_field = CheetorWorkingField(ctx->config().field());
+  auto out = spu::mpc::cheetor::SquareThenTrunc(
+      &kctx, x.data(), working_field, ctx->getFxpBits(), keep_field);
+  return Value(out, x.dtype());
+}
+
+static Value CheetorMul(SPUContext* ctx, const Value& x, const Value& y,
+                        bool keep_field) {
+  KernelEvalContext kctx(ctx);
+  auto working_field = CheetorWorkingField(ctx->config().field());
+  auto out = spu::mpc::cheetor::MulThenTrunc(
+      &kctx, x.data(), y.data(), working_field, ctx->getFxpBits(), keep_field);
+  return Value(out, x.dtype());
+}
+
 static std::array<Value, 3> ComputeUptoPower4(SPUContext* ctx, const Value& x) {
   SPU_ENFORCE(x.isFxp() and x.isSecret());
+
+  if (CanUseCheetor(ctx, x)) {
+    auto x2 = CheetorSquare(ctx, x, /*keep_field=*/true);
+    auto x3 = CheetorMul(ctx, x, x2, /*keep_field=*/true);
+    auto x4 = CheetorSquare(ctx, x2, /*keep_field=*/true);
+    return {x2, x3, x4};
+  }
+
   auto x2 = f_square(ctx, x);
   auto x4 = f_square(ctx, x2);
   auto x3 = f_mul(ctx, x, x2);
@@ -56,6 +90,49 @@ static std::vector<Value> ComputedBatchLessAP(SPUContext* ctx, const Value& x,
     ret.emplace_back(d, DT_I1);
   }
   return ret;
+}
+
+static int Seg3GeluWorkingFxpCap(FieldType field) {
+  return field == FM32 ? 12 : 16;
+}
+
+static std::array<Value, 3> ComputeSeg3GeluBranchIndicators(SPUContext* ctx,
+                                                            const Value& x) {
+  const float apprx_range = 3.0F;
+  const auto src_field = ctx->config().field();
+
+  auto compute_branch = [&](const Value& inp) {
+    const auto one = _constant(ctx, 1, inp.shape());
+    auto batch_less_than =
+        ComputedBatchLessAP(ctx, inp, {-apprx_range, 0.0F, apprx_range});
+    auto b1 = _xor(ctx, batch_less_than[1], one);  // x >= 0.0
+    auto b2 = _xor(ctx, batch_less_than[2], one);  // x >= 3.0
+    auto b0 = _xor(ctx, _xor(ctx, one, batch_less_than[0]), b2);
+    return std::array<Value, 3>{b0, b1, b2};
+  };
+
+  if (src_field == FM32) {
+    return compute_branch(x);
+  }
+
+  KernelEvalContext kctx(ctx);
+  mpc::cheetah::CastRing ring_change_kernel;
+  Value x32(ring_change_kernel.proc(&kctx, x.data(), FM32), DT_F32);
+
+  const_cast<RuntimeConfig*>(&ctx->config())->set_field(FM32);
+  ctx->getState<spu::mpc::Z2kState>()->setField(FM32);
+
+  auto branch_indicators = compute_branch(x32);
+
+  for (auto& indicator : branch_indicators) {
+    indicator = Value(
+        ring_change_kernel.proc(&kctx, indicator.data(), src_field), DT_I1);
+  }
+
+  const_cast<RuntimeConfig*>(&ctx->config())->set_field(src_field);
+  ctx->getState<spu::mpc::Z2kState>()->setField(src_field);
+
+  return branch_indicators;
 }
 
 // sigmoid(x) for x > 0
@@ -96,35 +173,33 @@ static Value do_f_sigmoid_positive(SPUContext* ctx, const Value& x) {
   return sigmoid;
 }
 
-static Value do_f_seg3_gelu(SPUContext* ctx, Value x) {
+static Value do_f_seg3_gelu(SPUContext* ctx, const Value& x,
+                            absl::Span<const Value> branch_indicators) {
   SPU_ENFORCE(x.isFxp() and x.isSecret());
+  SPU_ENFORCE_EQ(branch_indicators.size(), 3U);
 
-  // Compute gelu in FM32
-  // To prevent overflow in depth-1 mul, we can not use too large fxp
-  // We approximate in x \in [-3, 3].
+  // Compute gelu with a capped fixed-point precision.
+  // Keep the polynomial in the source ring so cheetor can still use its
+  // preferred working field, while capping fxp to avoid over-stretching x^4.
   const int fxp_before = ctx->getFxpBits();
-  const int _fxp = 12;
+  const int working_fxp_cap = Seg3GeluWorkingFxpCap(ctx->config().field());
+  const int _fxp = std::min(fxp_before, working_fxp_cap);
   const int fxp_to_drop = fxp_before - _fxp;
-  const float apprx_range = 3.0;
+  const auto& b0 = branch_indicators[0];
+  const auto& b1 = branch_indicators[1];
+  const auto& b2 = branch_indicators[2];
+
+  Value x_work = x;
 
   if (fxp_to_drop > 0) {
-    x = _trunc(ctx, x, fxp_to_drop).setDtype(x.dtype());
+    x_work = _trunc(ctx, x_work, fxp_to_drop).setDtype(x.dtype());
     const_cast<RuntimeConfig*>(&ctx->config())
         ->set_fxp_fraction_bits(fxp_before - fxp_to_drop);
   }
 
-  const auto ONE = _constant(ctx, 1, x.shape());
-  const auto True = _and(ctx, ONE, ONE);
-
-  auto batch_less_than =
-      ComputedBatchLessAP(ctx, x, {-apprx_range, 0.0F, apprx_range});
-  auto b1 = _xor(ctx, batch_less_than[1], ONE);  // x >= 0.0
-  auto b2 = _xor(ctx, batch_less_than[2], ONE);  // x >= 3
-  // -3 <= x <= -3.0
-  auto b0 = _xor(ctx, _xor(ctx, ONE, batch_less_than[0]), b2);
-
   // x = b1 ? x : -x
-  auto abs_x = _mux(ctx, b1, x, _negate(ctx, x)).setDtype(x.dtype());
+  auto abs_x =
+      _mux(ctx, b1, x_work, _negate(ctx, x_work)).setDtype(x.dtype());
 
   // seg = a*|x|^4 + b*|x|^3 + c*|x|^2 + d*|x| + e + 0.5x
   std::vector<float> coeffs = {0.001620808531841547, -0.03798164612714154,
@@ -140,11 +215,11 @@ static Value do_f_seg3_gelu(SPUContext* ctx, Value x) {
   auto seg_0 = constant(ctx, coeffs[0] * scale, x.dtype(), x.shape());
   auto seg = _trunc(
       ctx,
-      _add(ctx, _mul(ctx, x, constant(ctx, 0.5, x.dtype(), x.shape())),
+      _add(ctx, _mul(ctx, x_work, constant(ctx, 0.5, x.dtype(), x.shape())),
            _add(ctx, seg_0,
                 _add(ctx, seg_1, _add(ctx, seg_2, _add(ctx, seg_3, seg_4))))));
   // x > 3
-  auto gelu = _mul(ctx, b2, x);
+  auto gelu = _mul(ctx, b2, x_work);
   // -3 <= x  <= 3
   gelu = _add(ctx, gelu, _mul(ctx, b0, seg));
   gelu.setDtype(x.dtype());
@@ -158,20 +233,16 @@ static Value do_f_seg3_gelu(SPUContext* ctx, Value x) {
   return gelu;
 }
 
-Value f_seg3_gelu(SPUContext* ctx, const Value& x_) {
+Value f_seg3_gelu_fm32_baseline(SPUContext* ctx, const Value& x_) {
   SPU_TRACE_HAL_LEAF(ctx, x_);
   SPU_ENFORCE(ctx->config().protocol() == ProtocolKind::CHEETAH);
 
   [[maybe_unused]] size_t sent = ctx->lctx()->GetStats()->sent_bytes;
-
-  // NOTE(lwj): We compute the whole seg3_gelu(x) over a smaller 32-bit ring.
-  // We first cast down the share of x to the target ring FM32.
   auto src_field = ctx->config().field();
   auto target_field = FieldType::FM32;
 
   spu::Value x = [&]() {
     if (src_field == target_field) {
-      // noting to do
       return x_;
     }
 
@@ -180,20 +251,16 @@ Value f_seg3_gelu(SPUContext* ctx, const Value& x_) {
 
     spu::Value ret(ring_change_kernel.proc(&kctx, x_.data(), target_field),
                    DT_F32);
-    // Because the ring_cast operation is not supported by SPU, we need to call
-    // Cheetah's CastRing protocol directly.
-    // Also, we need mannually modify the default field in RuntimeConfig to FM32
-    // NOTE(lwj): dirty hack to change the current field
     const_cast<RuntimeConfig*>(&ctx->config())->set_field(target_field);
     ctx->getState<spu::mpc::Z2kState>()->setField(target_field);
 
     return ret;
   }();
 
-  auto gelu = do_f_seg3_gelu(ctx, x);
+  auto branch_indicators = ComputeSeg3GeluBranchIndicators(ctx, x);
+  auto gelu = do_f_seg3_gelu(ctx, x, absl::MakeConstSpan(branch_indicators));
 
   if (src_field != target_field) {
-    // convert the field and fxp back
     const_cast<RuntimeConfig*>(&ctx->config())->set_field(src_field);
     ctx->getState<spu::mpc::Z2kState>()->setField(src_field);
 
@@ -205,8 +272,27 @@ Value f_seg3_gelu(SPUContext* ctx, const Value& x_) {
   }
 
   sent = ctx->lctx()->GetStats()->sent_bytes - sent;
-  SPDLOG_INFO("seg3_gelu {} sent {} MiB", gelu.numel(), sent / 1024. / 1024.);
+  SPDLOG_INFO("seg3_gelu_fm32_baseline {} sent {} MiB", gelu.numel(),
+              sent / 1024. / 1024.);
   return gelu;
+}
+
+Value f_seg3_gelu_hybrid(SPUContext* ctx, const Value& x_) {
+  SPU_TRACE_HAL_LEAF(ctx, x_);
+  SPU_ENFORCE(ctx->config().protocol() == ProtocolKind::CHEETAH);
+
+  [[maybe_unused]] size_t sent = ctx->lctx()->GetStats()->sent_bytes;
+  auto branch_indicators = ComputeSeg3GeluBranchIndicators(ctx, x_);
+  auto gelu = do_f_seg3_gelu(ctx, x_, absl::MakeConstSpan(branch_indicators));
+
+  sent = ctx->lctx()->GetStats()->sent_bytes - sent;
+  SPDLOG_INFO("seg3_gelu_hybrid {} sent {} MiB", gelu.numel(),
+              sent / 1024. / 1024.);
+  return gelu;
+}
+
+Value f_seg3_gelu(SPUContext* ctx, const Value& x) {
+  return f_seg3_gelu_hybrid(ctx, x);
 }
 
 Value do_f_seg4_silu(SPUContext* ctx, const Value& x,
@@ -237,6 +323,9 @@ Value do_f_seg4_silu(SPUContext* ctx, const Value& x,
   silu = _add(ctx, silu, _mul(ctx, branch_indicators[0], sigmoid))
              .setDtype(x.dtype());
 
+  if (CanUseCheetor(ctx, x)) {
+    return CheetorMul(ctx, x, silu, /*keep_field=*/true);
+  }
   return f_mul(ctx, x, silu);
 }
 
@@ -288,7 +377,7 @@ Value f_seg4_silu(SPUContext* ctx, const Value& x) {
 
 Value f_neg_exp_taylor(SPUContext* ctx, const Value& x) {
   SPU_TRACE_HAL_LEAF(ctx, x);
-
+  
   int fxp_exp_iters = ctx->config().fxp_exp_iters();
   SPU_ENFORCE(fxp_exp_iters != 0, "fxp_exp_iters should not be {}",
               fxp_exp_iters);
@@ -296,10 +385,10 @@ Value f_neg_exp_taylor(SPUContext* ctx, const Value& x) {
   [[maybe_unused]] size_t sent = ctx->lctx()->GetStats()->sent_bytes;
   const auto ONE = _constant(ctx, 1, x.shape());
   const auto True = _and(ctx, ONE, ONE);
-  float neg_range = -14.0;
+  float neg_range = -8.0;
   auto is_not_too_small =
       _xor(ctx, True, ComputedBatchLessAP(ctx, x, {neg_range})[0]);
-
+  /*
   // 1 + x/2^n
   Value res = f_add(ctx, _trunc(ctx, x, fxp_exp_iters).setDtype(x.dtype()),
                     constant(ctx, 1.0F, x.dtype(), x.shape()));
@@ -311,9 +400,18 @@ Value f_neg_exp_taylor(SPUContext* ctx, const Value& x) {
 
   // convert the field and fxp back
   auto ret = _mul(ctx, is_not_too_small, res).setDtype(x.dtype());
+  */
+  
+  spu::KernelEvalContext kcontext(ctx);
+
+  spu::NdArrayRef input = x.data();
+  Value output = Value(spu::mpc::cheetor::NExp_8(&kcontext, input, 18), x.dtype()); // point to cheetor nexp
+
+  auto ret = _mul(ctx, is_not_too_small, output).setDtype(x.dtype());
 
   sent = ctx->lctx()->GetStats()->sent_bytes - sent;
   SPDLOG_INFO("f_nexp {} sent {} MiB", x.numel(), sent / 1024. / 1024.);
+  
   return ret;
 }
 

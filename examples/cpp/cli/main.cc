@@ -36,7 +36,7 @@ llvm::cl::opt<int> Rank("rank", llvm::cl::init(0),
                         llvm::cl::desc("Rank. 0 for P0, and 1 for P1"));
 
 llvm::cl::opt<std::string> Parties(
-    "parties", llvm::cl::init("127.0.0.1:9530,127.0.0.1:9531"),
+    "parties", llvm::cl::init("127.0.0.1:1111,127.0.0.1:1112"),
     llvm::cl::desc("server list, format: host1:port1[,host2:port2, ...]"));
 
 llvm::cl::opt<int> P0Width("b0", llvm::cl::init(32),
@@ -56,7 +56,7 @@ llvm::cl::opt<std::string> Protocol(
                    "R2R (ring-to-ring)\n"
                    "R2F (ring-to-field)\n"
                    "F2R (field-to-ring)\n"
-                   "TRC2k (truncate over Z2k)\n"));
+	                 "TRC2k (truncate over Z2k)\n"));
 
 bool CheckRank(int rank) { return rank == 0 or rank == 1; }
 
@@ -385,7 +385,7 @@ int main(int argc, char** argv) {
   funcs.insert({"R2R", {Larger1, RunR2R}});
   funcs.insert({"F2R", {Larger1, RunF2R}});
   funcs.insert({"TRC2k", {Larger0, RunTRC2k}});
-
+  
   if (prot == "All") {
     auto link = MakeLink(Parties.getValue(), rank);
     int b0 = 32;

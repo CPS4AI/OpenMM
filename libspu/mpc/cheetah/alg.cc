@@ -207,13 +207,17 @@ NdArrayRef MulThenTrunc(KernelEvalContext* kctx, const NdArrayRef& x,
 
   std::vector<uint64_t> x_prime_share(numel * prime_modulus.size());
   std::vector<uint64_t> y_prime_share(numel * prime_modulus.size());
-  for (size_t i = 0; i < prime_modulus.size(); ++i) {
-    ProbConvRing2kShareToPrimeShare(
-        x, absl::MakeSpan(x_prime_share).subspan(i * numel, numel),
-        prime_modulus[i], rank);
-    ProbConvRing2kShareToPrimeShare(
-        y, absl::MakeSpan(y_prime_share).subspan(i * numel, numel),
-        prime_modulus[i], rank);
+  {
+    SPU_TRACE_ACTION(GET_TRACER(kctx), kctx->lctx(), (TR_MPC | TR_LAR),
+                     (~TR_MPC), "ring_to_prime");
+    for (size_t i = 0; i < prime_modulus.size(); ++i) {
+      ProbConvRing2kShareToPrimeShare(
+          x, absl::MakeSpan(x_prime_share).subspan(i * numel, numel),
+          prime_modulus[i], rank);
+      ProbConvRing2kShareToPrimeShare(
+          y, absl::MakeSpan(y_prime_share).subspan(i * numel, numel),
+          prime_modulus[i], rank);
+    }
   }
 
   NdArrayRef muled;
@@ -293,10 +297,14 @@ NdArrayRef SquareThenTrunc(KernelEvalContext* kctx, const NdArrayRef& x,
   std::vector<uint64_t> prime_modulus =
       CheetorMulProt::GetWorkingPrimes(working_ft);
   std::vector<uint64_t> prime_share(numel * prime_modulus.size());
-  for (size_t i = 0; i < prime_modulus.size(); ++i) {
-    ProbConvRing2kShareToPrimeShare(
-        x, absl::MakeSpan(prime_share).subspan(i * numel, numel),
-        prime_modulus[i], rank);
+  {
+    SPU_TRACE_ACTION(GET_TRACER(kctx), kctx->lctx(), (TR_MPC | TR_LAR),
+                     (~TR_MPC), "ring_to_prime");
+    for (size_t i = 0; i < prime_modulus.size(); ++i) {
+      ProbConvRing2kShareToPrimeShare(
+          x, absl::MakeSpan(prime_share).subspan(i * numel, numel),
+          prime_modulus[i], rank);
+    }
   }
 
   NdArrayRef square;
@@ -409,9 +417,14 @@ NdArrayRef NExp_8(KernelEvalContext* kctx, const NdArrayRef& _x, int fxp) {
   seal::Modulus prime_minus_one(prime.value() - 1);
 
   // convert from ring-share (int-part) to a prime share over p - 1
-  ProbConvRing2kShareToPrimeShare(
-      _int_part, absl::MakeSpan(_int_part.data<uint64_t>(), _int_part.numel()),
-      prime_minus_one, rank);
+  {
+    SPU_TRACE_ACTION(GET_TRACER(kctx), kctx->lctx(), (TR_MPC | TR_LAR),
+                     (~TR_MPC), "ring_to_prime");
+    ProbConvRing2kShareToPrimeShare(_int_part,
+                                    absl::MakeSpan(_int_part.data<uint64_t>(),
+                                                   _int_part.numel()),
+                                    prime_minus_one, rank);
+  }
 
   pforeach(0, x.numel(), [&](int64_t i) {
     // y = 2^int_part mod p

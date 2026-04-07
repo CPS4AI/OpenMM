@@ -20,23 +20,16 @@
 
 import argparse
 import json
-import os
 import time
 from contextlib import contextmanager
 
 import flax.linen as fnn
 import jax
 import jax.nn as jnn
-from datasets import load_dataset
+import jax.numpy as jnp
 from transformers import (
-    AutoTokenizer,
-    BertConfig,
     BertTokenizerFast,
     FlaxBertForSequenceClassification,
-    FlaxGPT2LMHeadModel,
-    FlaxRobertaForSequenceClassification,
-    GPT2Config,
-    RobertaTokenizerFast,
 )
 
 import spu.intrinsic as intrinsic
@@ -56,9 +49,11 @@ with open(args.config, 'r') as file:
 
 ppd.init(conf["nodes"], conf["devices"])
 
+FIXED_SEQ_LEN = 128
+
 
 def _gelu(x):
-    return intrinsic.spu_gelu(x)
+    return intrinsic.spu_gelu_hybrid(x)
 
 
 def _softmax(x, axis=-1, where=None, initial=None):
@@ -86,7 +81,6 @@ def hijack(enabled=True):
     fnn.gelu = _gelu
     jnn.softmax = _softmax
     fnn.softmax = _softmax
-
     yield
     # recover back
     jnn.gelu = jnn_gelu
@@ -95,12 +89,13 @@ def hijack(enabled=True):
     fnn.softmax = fnn_sm
 
 
-def run_on_cpu(model, input_ids, attention_masks, labels):
+def run_on_cpu(model, input_ids, attention_masks):
     print(f"Running on CPU ...")
     params = model.params
 
     def eval(params, input_ids, attention_masks):
-        logits = model(input_ids, attention_masks, params=params)[0]
+        with hijack(enabled=False):
+            logits = model(input_ids, attention_masks, params=params)[0]
         return logits
 
     start = time.time()
@@ -109,7 +104,7 @@ def run_on_cpu(model, input_ids, attention_masks, labels):
     print(f"CPU runtime: {(end - start)}s\noutput logits: {logits}")
 
 
-def run_on_spu(model, input_ids, attention_masks, labels):
+def run_on_spu(model, input_ids, attention_masks):
     print(f"Running on SPU ...")
     params = model.params
 
@@ -130,28 +125,34 @@ def run_on_spu(model, input_ids, attention_masks, labels):
     print(f"SPU runtime: {(end - start)}s\noutput logits: {logits_spu}")
 
 
+def make_fixed_input(tokenizer):
+    # Build a deterministic single-sentence input with exactly 128 valid tokens.
+    cls_id = tokenizer.cls_token_id
+    sep_id = tokenizer.sep_token_id
+
+    filler_tokens = tokenizer.encode("hello", add_special_tokens=False)
+    filler_id = filler_tokens[0] if filler_tokens else tokenizer.unk_token_id
+
+    input_ids = [cls_id] + [filler_id] * (FIXED_SEQ_LEN - 2) + [sep_id]
+    attention_mask = [1] * FIXED_SEQ_LEN
+
+    return (
+        jnp.asarray([input_ids], dtype=jnp.int32),
+        jnp.asarray([attention_mask], dtype=jnp.int32),
+    )
+
+
 def main(tokenizer_func, model_func, checkpoint):
-    dataset = load_dataset("glue", "cola", split="test")
     model = model_func.from_pretrained(checkpoint)
     tokenizer = tokenizer_func.from_pretrained(checkpoint)
+    input_ids, attention_masks = make_fixed_input(tokenizer)
 
-    for dummy_input in dataset:
-        features, labels = dummy_input["sentence"], dummy_input["label"]
-
-        input_ids, attention_masks = (
-            tokenizer(
-                features,
-                return_tensors="jax",
-            )["input_ids"],
-            tokenizer(
-                features,
-                return_tensors="jax",
-            )["attention_mask"],
-        )
-
-        run_on_cpu(model, input_ids, attention_masks, labels)
-        run_on_spu(model, input_ids, attention_masks, labels)
-        break  # just test one sentense
+    print(
+        f"input_ids shape: {input_ids.shape}, "
+        f"attention_mask sum: {attention_masks.sum()}"
+    )
+    run_on_cpu(model, input_ids, attention_masks)
+    run_on_spu(model, input_ids, attention_masks)
 
 
 if __name__ == "__main__":
