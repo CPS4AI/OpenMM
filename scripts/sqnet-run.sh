@@ -1,0 +1,1 @@
+bash scripts/run-client.sh sqnet & bash scripts/run-server.sh sqnet
