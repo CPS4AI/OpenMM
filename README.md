@@ -1,24 +1,7 @@
-## BumbleBee: Secure Two-party Inference Framework for Large Transformers
+## M&M branch for private LLM inference 
 
-This repo contains a proof-of-concept implementation for [our paper](https://eprint.iacr.org/2023/1678). Please cite the conference version.
+This repo contains a proof-of-concept implementation of M&M based on SPU and BumbleBee. The following content is adopted from OpenBumbleBee.
 
-```tex
-@inproceedings{DBLP:conf/ndss/LuHGLLRHWC25,
-  author       = {Wen{-}jie Lu and
-                  Zhicong Huang and
-                  Zhen Gu and
-                  Jingyu Li and
-                  Jian Liu and
-                  Cheng Hong and
-                  Kui Ren and
-                  Tao Wei and
-                  Wenguang Chen},
-  title        = {{BumbleBee: Secure Two-party Inference Framework for Large Transformers}},
-  booktitle    = {32nd Annual Network and Distributed System Security Symposium, {NDSS} 2025},
-  publisher    = {The Internet Society},
-  year         = {February 23-28, 2025},
-}
-```
 
 The codes are still under heavy developments, and **should not** be used in any security sensitive product.
 
