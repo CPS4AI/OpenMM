@@ -36,12 +36,19 @@
 #include <cstdint>
 #include <memory>
 #include <array>
+#include <string>
 
 namespace emp {
 class NetIO;
 template <typename T>
 class FerretCOT;
 }  // namespace emp
+
+// cuOT's GPU block-array type (deps/cuOT/gpu/gpu_matrix.h), global scope.
+// Forward-declared so cuot_provider.h can expose rcot_blocks_gpu(Mat&, ...)
+// without pulling the full cuOT GPU headers (which would collide with the
+// emp-tool headers on the cuot build target).
+class Mat;
 
 namespace gpu_mm {
 
@@ -54,8 +61,19 @@ class CuotProvider : public OTProvider {
     // concurrently (NetIO connects). run_setup=true runs Ferret bootstrap
     // (base-OT + initial extend) in the ctor, writing/reading the
     // ./data/pre_ot_data_reg_* cache.
+    //
+    // pre_file: Ferret pre-OT cache path override (empty = the default
+    //   ./data/pre_ot_data_reg_{send,recv} from constants.h). A party that
+    //   builds TWO FerretCOTs (e.g. bit-triple gen needs one sender + one
+    //   receiver Ferret on the SAME party — opposite Delta ownership for the
+    //   two ROT directions) MUST give them distinct pre_file so the cache-HIT
+    //   path doesn't cross-contaminate (and the recycle bug, ferret_cot.hpp
+    //   :99, writes a recycled seed into whichever file). Pass e.g.
+    //   "data/pre_ot_data_reg_send_fwd"/"_recv_fwd" for the "reversed"
+    //   (BOB-sends) Ferret.
     CuotProvider(OTParty role, int port, int gpu,
-                 const char* address = "127.0.0.1", bool run_setup = true);
+                 const char* address = "127.0.0.1", bool run_setup = true,
+                 const std::string& pre_file = "");
     ~CuotProvider() override;
 
     CuotProvider(const CuotProvider&) = delete;
@@ -77,6 +95,36 @@ class CuotProvider : public OTProvider {
     // block-level RCOT — NOT the arithmetic COT of OTProvider::send_cot.
     OTStatus rcot_blocks(uint8_t* out, int64_t n);
 
+    // --- OPT-1: GPU-resident RCOT (no D2H) ---------------------------------
+    // Fill the caller-owned GPU `Mat` with `n` RCOT blocks. The blocks stay
+    // on the GPU (no write_to_cpu) so the GPU MITCCRH/Beaver kernels can
+    // consume them by device pointer. The caller slices the Mat via
+    // `data() + offset` for leaf vs triple (one big rcot, not 3 small ones).
+    // Mat must be pre-sized to n blocks (Mat({(uint64_t)n})). cuda_setdev is
+    // called internally (re-pin in case the host thread changed it).
+    OTStatus rcot_blocks_gpu(Mat& out, int64_t n);
+
+    // The underlying emp::FerretCOT — exposed so the GPU kernels (cuot_kernels.cu)
+    // and the gpu_mm compare primitive can reach Delta / NetIO directly without
+    // round-tripping bytes through the host. NOT for protocol code; the backend
+    // owns the channel.
+    emp::FerretCOT<emp::NetIO>* ferret() { return ferret_.get(); }
+
+    // --- OPT-1/2: GPU-resident block chosen-COT (no D2H, diff-vector on GPU) -
+    // Like send/recv_cot_blocks but the RCOT blocks stay on the GPU (caller's
+    // Mat) and the diff-vector is computed + bit-packed on the GPU (OPT-2),
+    // exchanged as n/8 bytes (vs the CPU path's n bytes). Only n/8 bytes cross
+    // host<->net; the blocks never leave the GPU. Mirrors send/recv_cot_blocks
+    // (cuot_provider.cc) but GPU-resident.
+    //   send_cot_blocks_gpu(out_mat, n): sender. rcot into Mat; recv packed d
+    //     (n/8 bytes); apply_diff_vector on GPU (x' = x ^ (d?Delta:0)).
+    //   recv_cot_blocks_gpu(out_mat, b_dev, n): receiver. rcot into Mat;
+    //     diff_vector_pack8 on GPU (d = lsb(r)^b, packed); send n/8 bytes.
+    // b_dev is a DEVICE pointer (uint8_t*, n bytes, 0/1) — the choice bits,
+    // already on the GPU (e.g. extracted from digits by the caller).
+    OTStatus send_cot_blocks_gpu(Mat& out, int64_t n);
+    OTStatus recv_cot_blocks_gpu(Mat& out, const uint8_t* b_dev, int64_t n);
+
     // --- Block-level chosen COT (paper §III-D "Generating COTs from RCOTs") --
     // Implemented WITHOUT cuOT's IPC online path (which is hardcoded to an
     // 8-GPU topology). Instead we reuse rcot_blocks + an exchange of the diff
@@ -93,6 +141,24 @@ class CuotProvider : public OTProvider {
     // caller's `b` is consumed). `b` is the receiver's choice bits (length n).
     OTStatus send_cot_blocks(uint8_t* out, int64_t n);
     OTStatus recv_cot_blocks(uint8_t* out, const bool* b, int64_t n);
+
+    // --- Block-level random OT (ROT) — for _2ROT bit-triple generation (M3-T6 Phase B) --
+    // SCI's _2ROT triple (bit-triple-generator.h:184-199) needs a 1-2 random OT:
+    //   sender gets (m0, m1) two INDEPENDENT random blocks; receiver gets m_{r}
+    //   for its random choice bit r. This is emp COT<T>::send_rot/recv_rot
+    //   (deps/emp-tool/.../cot.h): rcot + MITCCRH decorrelation. cuOT's
+    //   FerretCOT inherits send_rot/recv_rot, but they call the no-op
+    //   send_cot(block*) (ferret_cot.h:41) -> broken on cuOT. So we re-derive
+    //   ROT on top of our send_cot_blocks/recv_cot_blocks (the diff-vector
+    //   block chosen-COT): run a chosen-COT with RECEIVER's random choice r,
+    //   then MITCCRH-hash (hash<ot_bsize,2> sender / hash<ot_bsize,1> recv) to
+    //   decorrelate into independent (m0,m1)/m_{r}. Mirrors cot.h send_rot/
+    //   recv_rot + send_ot_rm_rc (silent_ot.h:425-465). The seed sync (sender
+    //   picks s, sends to receiver) matches SCI.
+    //   out (sender): n*2 blocks, [m0_0,m1_0, m0_1,m1_1, ...] interleaved.
+    //   out (receiver): n blocks, m_{r_i} per element. r (receiver): n choice bits.
+    OTStatus send_rot_blocks(uint8_t* out, int64_t n);
+    OTStatus recv_rot_blocks(uint8_t* out, const bool* r, int64_t n);
 
     // Sender (ALICE) only: the global Ferret Delta (128-bit), LSB forced to 1.
     // Exposed for the standalone correlation test to verify

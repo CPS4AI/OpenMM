@@ -113,6 +113,23 @@ add_test(profiler_smoke_test)
 add_test(cpu_baseline_profile)
 add_test(he_backend_smoke_test)
 add_ot_test(ot_provider_smoke_test)
+add_ot_test(wrap_bit_or_test)
+# M3-T4: ring→field OR_AUX primitive (the ONLY COT-p callsite in M&M) on the
+# gpu_mm OTProvider seam, CPU emp default. Mirrors truncation.cpp:543-559;
+# SCI untouched. cuOT counterpart is cuot_ring_to_field_test (below).
+add_ot_test(ring_to_field_or_aux_test)
+# M3-T5: field→ring OR_AUX primitive (COT-l callsite, truncation.cpp:600-616)
+# on the gpu_mm OTProvider seam, CPU emp default. SCI untouched. cuOT
+# counterpart is cuot_field_to_ring_test (below).
+add_ot_test(field_to_ring_or_aux_test)
+# M3-T6 Phase A: CPU baseline single-digit compare leaf (SCI kkot 1-OO-N-KOT,
+# N∈{2,4,8,16}) — the correctness + comm baseline for the cuOT leaf diagnostic.
+# Mirrors millionaire.h:82-122 leaf; SCI untouched.
+add_ot_test(leaf_cmp_ref_test)
+# M3-T6 Phase C: CPU baseline full 32-bit Millionaire compare (SCI
+# MillionaireProtocol::compare) — correctness + latency/comm baseline for the
+# cuOT compare diagnostic. SCI untouched.
+add_test(compare_ref_test)
 add_test(share_tensor_backend_test)
 
 # cuOT GPU OT backend + standalone tests (M2). Only built when
@@ -129,15 +146,17 @@ if(OPENMM_ENABLE_CUOT)
     add_executable(${_name}
       "tests/${_name}.cpp"
       "include/gpu_mm/cuot_provider.cc"
+      "include/gpu_mm/cuot_kernels.cu"
       ${cuOT_GPU_SOURCES})
     target_link_libraries(${_name} PRIVATE cuOT::dev)
     set_target_properties(${_name} PROPERTIES CXX_STANDARD 20)
     # Force .cc/.cpp to the host compiler (g++), NOT nvcc: emp-tool headers
     # use std::vector, which nvcc rejects in device context. The .cu sources
-    # stay CUDA (compiled by nvcc).
+    # (cuot_kernels.cu + cuOT_GPU_SOURCES) stay CUDA (compiled by nvcc).
     set_source_files_properties("include/gpu_mm/cuot_provider.cc"
       "tests/${_name}.cpp" PROPERTIES LANGUAGE CXX)
-    set_source_files_properties(${cuOT_GPU_SOURCES} PROPERTIES LANGUAGE CUDA)
+    set_source_files_properties("include/gpu_mm/cuot_kernels.cu"
+      ${cuOT_GPU_SOURCES} PROPERTIES LANGUAGE CUDA)
     # CRITICAL: prepend cuOT's include dirs BEFORE the project's build/include.
     # The CPU emp-ot is installed at build/include/emp-ot/ferret/constants.h
     # and SHARDS cuOT's emp-ot/ferret/constants.h (same guard, same relative
@@ -147,5 +166,40 @@ if(OPENMM_ENABLE_CUOT)
     target_include_directories(${_name} BEFORE PRIVATE ${cuOT_INCLUDE_DIRS})
   endmacro()
   add_cuot_test(cuot_correlation_test)
+  # M3-T6 OPT-1 risk gate: GPU MITCCRH (cuot_kernels.cu) vs CPU NaryMitccrh
+  # micro-bench. Pure AES timing, no network. Decides whether full GPU-resident
+  # rewiring is worth it (GPU must beat CPU AES-NI on the leaf pad workload).
+  add_cuot_test(cuot_mitccrh_bench)
   add_cuot_test(cuot_deltaot_arithmetic_test)
+  # M3-T3: cuOT-backed wrap-bit logical-OR. Same WrapBitOr primitive as the
+  # CPU wrap_bit_or_test, but backed by CuotProvider (GPU Ferret). Same boundary
+  # + 100k cases. Inherits cuOT's ~2% RCOT floor — adapter-logic/wiring pass,
+  # NOT a clean 100k pass (see tests/cuot_wrap_bit_or_test.cpp header).
+  add_cuot_test(cuot_wrap_bit_or_test)
+  # M3-T4: cuOT-backed ring→field OR_AUX. Same RingToField primitive as the
+  # CPU ring_to_field_or_aux_test, backed by CuotProvider (GPU Ferret). Same
+  # boundary + 100k cases. Inherits cuOT's ~2% RCOT floor — adapter-logic/
+  # wiring pass, NOT a clean 100k pass (see tests/cuot_ring_to_field_test.cpp).
+  add_cuot_test(cuot_ring_to_field_test)
+  # M3-T5: cuOT-backed field→ring OR_AUX. Same FieldToRing primitive as the
+  # CPU field_to_ring_or_aux_test, backed by CuotProvider. Same boundary +
+  # 100k cases. Inherits cuOT's ~2% RCOT floor — adapter-logic/wiring pass,
+  # NOT a clean 100k pass (see tests/cuot_field_to_ring_test.cpp).
+  add_cuot_test(cuot_field_to_ring_test)
+  # M3-T6 Phase A: cuOT single-digit compare leaf (1-OO-N-KOT reduced to
+  # block chosen-COT + garbled table). Same bitlengths/cases as the CPU
+  # leaf_cmp_ref_test, backed by CuotProvider. Diagnostic only — inherits
+  # cuOT's ~2% RCOT floor compounded over logN (see tests/cuot_leaf_cmp_test.cpp).
+  add_cuot_test(cuot_leaf_cmp_test)
+  # M3-T6 Phase B: cuOT block-ROT primitive (send_rot_blocks/recv_rot_blocks,
+  # re-derived on send_cot_blocks/recv_cot_blocks + MITCCRH decorrelation) +
+  # cuOT bit-triple (_2ROT Beaver). Validates the ROT in isolation, then the
+  # triple on top. Diagnostic — inherits ~2% RCOT floor (x2 ROTs ~4%).
+  add_cuot_test(cuot_rot_smoke_test)
+  add_cuot_test(cuot_bit_triple_test)
+  # M3-T6 Phase C: cuOT full 32-bit Millionaire compare. Composes Phase A's
+  # KkotLeafCmp (2-bit leaf) + Phase B's BitTripleGen (_2ROT AND-tree) into a
+  # full compare. Diagnostic — inherits ~2% RCOT floor compounded over
+  # 8-digit leaf + 11-triple tree; reports error rate + latency + comm.
+  add_cuot_test(cuot_compare_test)
 endif()
